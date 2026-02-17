@@ -3,7 +3,7 @@ import os
 import boto3
 from datetime import datetime, timedelta
 from io import BytesIO
-from enum import Enum
+
 
 import yfinance as yf
 import pandas as pd
@@ -12,8 +12,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from pydantic import BaseModel, Field
-from typing import Optional
+from .base import Report, Status
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.lib.units import inch
@@ -22,6 +21,7 @@ from reportlab.platypus import Paragraph
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 
+import random
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -33,30 +33,6 @@ sqs_client = boto3.client("sqs", region_name=AWS_REGION)
 s3_client = boto3.client("s3", region_name=AWS_REGION)
 
 # Portfolio configuration
-PORTFOLIO = {
-    'AAPL': 91,
-    'MSFT': 123,
-    'GOOGL': 14,
-    'TSLA': 71,
-    'NVDA': 1011,
-    'SPY': 201,  # Benchmark
-}
-
-class Status(Enum):
-    CREATED = 'CREATED'
-    QUEUED = 'QUEUED'
-    IN_PROGRESS = 'IN_PROGRESS'
-    UPLOAD_STARTED = 'UPLOAD_STARTED'
-    FINISHED = 'FINISHED'
-    FAILED = 'FAILED'
-
-class Report(BaseModel):
-    report_id: int
-    batch_no: int
-    status: Status = Status.CREATED
-    s3_key: Optional[str] = None
-    payload: dict
-
 
 def fetch_data(tickers, period='2mo'):
     data = {}
@@ -374,7 +350,8 @@ def create_pdf_dashboard(portfolio_data, total_value, total_cost, portfolio_hist
     return buffer.getvalue()
 
 
-def collect_data_and_generate_report():
+def collect_data_and_generate_report(PORTFOLIO):
+
     print("Fetching market data...")
     all_tickers = list(PORTFOLIO.keys())
     data = fetch_data(all_tickers)
