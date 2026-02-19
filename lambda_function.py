@@ -12,7 +12,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from .base import Report, Status
+from base import Report, Status
+from db import update_report_status
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.lib.units import inch
@@ -22,6 +23,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 
 import random
+from concurrent.futures import ThreadPoolExecutor
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -29,20 +31,27 @@ SQS_QUEUE_URL = os.environ.get("SQS_QUEUE_URL")
 S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-2")
 
-sqs_client = boto3.client("sqs", region_name=AWS_REGION)
 s3_client = boto3.client("s3", region_name=AWS_REGION)
 
 # Portfolio configuration
 
+def _fetch_single(ticker, period):
+    try:
+        stock = yf.Ticker(ticker)
+        return ticker, stock.history(period=period)
+    except Exception:
+        print(f"Failed to fetch {ticker}")
+        return ticker, None
+
+
 def fetch_data(tickers, period='2mo'):
     data = {}
-    for ticker in tickers:
-        try:
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period=period)
-            data[ticker] = hist
-        except:
-            print(f"Failed to fetch {ticker}")
+    with ThreadPoolExecutor(max_workers=len(tickers)) as pool:
+        futures = [pool.submit(_fetch_single, t, period) for t in tickers]
+        for future in futures:
+            ticker, hist = future.result()
+            if hist is not None:
+                data[ticker] = hist
     return data
 
 
@@ -295,9 +304,12 @@ def create_pdf_dashboard(portfolio_data, total_value, total_cost, portfolio_hist
     elements.append(holdings_table)
     elements.append(Spacer(1, 0.3*inch))
 
-    # Charts side by side
-    pie_buf = create_pie_chart(portfolio_data)
-    line_buf = create_line_chart(portfolio_history)
+    # Charts side by side (generated in parallel)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pie_future = pool.submit(create_pie_chart, portfolio_data)
+        line_future = pool.submit(create_line_chart, portfolio_history)
+        pie_buf = pie_future.result()
+        line_buf = line_future.result()
 
     pie_img = Image(pie_buf, width=3*inch, height=3*inch)
     line_img = Image(line_buf, width=4*inch, height=2*inch)
@@ -350,23 +362,22 @@ def create_pdf_dashboard(portfolio_data, total_value, total_cost, portfolio_hist
     return buffer.getvalue()
 
 
-def collect_data_and_generate_report(PORTFOLIO):
-
-    print("Fetching market data...")
-    all_tickers = list(PORTFOLIO.keys())
+def collect_data_and_generate_report(portfolio, log_prefix=""):
+    print(f"{log_prefix} Fetching market data for tickers: {list(portfolio.keys())}")
+    all_tickers = list(portfolio.keys())
     data = fetch_data(all_tickers)
 
-    print("Calculating portfolio metrics...")
-    portfolio_data, total_value, total_cost = calculate_portfolio_metrics(PORTFOLIO, data)
+    print(f"{log_prefix} Calculating portfolio metrics...")
+    portfolio_data, total_value, total_cost = calculate_portfolio_metrics(portfolio, data)
 
-    print("Calculating portfolio history...")
-    portfolio_history = calculate_portfolio_history(PORTFOLIO, data, days=30)
+    print(f"{log_prefix} Calculating portfolio history...")
+    portfolio_history = calculate_portfolio_history(portfolio, data, days=30)
 
-    print("Calculating advanced metrics...")
+    print(f"{log_prefix} Calculating advanced metrics...")
     benchmark_data = data.get('SPY', None)
     metrics = calculate_advanced_metrics(portfolio_history, benchmark_data)
 
-    print("Generating PDF...")
+    print(f"{log_prefix} Generating PDF... total_value=${total_value:,.2f}")
     pdf_content = create_pdf_dashboard(portfolio_data, total_value, total_cost, portfolio_history, metrics)
 
     return pdf_content
@@ -376,22 +387,31 @@ def lambda_handler(event, context):
     processed_count = 0
     reports = []
 
-    for record in event["Records"]:
+    total_records = len(event["Records"])
+    print(f"[lambda] Received {total_records} record(s)")
+
+    for idx, record in enumerate(event["Records"]):
         body = json.loads(record["body"])
         report = Report(
-            report_id=body["id"],
-            batch_no=str(body["batch_no"]),
+            report_id=body["report_id"],
+            batch_no=body["batch_no"],
+            payload=body["payload"],
             status=Status.QUEUED,
         )
 
+        prefix = f"[batch={report.batch_no} report={report.report_id} ({idx+1}/{total_records})]"
+
         try:
             report.status = Status.IN_PROGRESS
-            print(f"batch-{report.batch_no} processing report {report.report_id}")
+            update_report_status(report.report_id, report.batch_no, Status.IN_PROGRESS)
+            print(f"{prefix} Status: IN_PROGRESS")
 
-            pdf_content = collect_data_and_generate_report()
+            pdf_content = collect_data_and_generate_report(report.payload, log_prefix=prefix)
 
             report.status = Status.UPLOAD_STARTED
+            update_report_status(report.report_id, report.batch_no, Status.UPLOAD_STARTED)
             s3_key = f"reports/batch-{report.batch_no}/{report.report_id}/portfolio_dashboard_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
+            print(f"{prefix} Status: UPLOAD_STARTED -> s3://{S3_BUCKET_NAME}/{s3_key}")
 
             s3_client.put_object(
                 Bucket=S3_BUCKET_NAME,
@@ -402,13 +422,18 @@ def lambda_handler(event, context):
 
             report.s3_key = s3_key
             report.status = Status.FINISHED
-            print(f"Uploaded report to s3://{S3_BUCKET_NAME}/{s3_key}")
+            update_report_status(report.report_id, report.batch_no, Status.FINISHED, s3_key=s3_key)
+            print(f"{prefix} Status: FINISHED")
             processed_count += 1
 
         except Exception as e:
             report.status = Status.FAILED
-            print(f"Error processing report {report.report_id}: {str(e)}")
+            update_report_status(report.report_id, report.batch_no, Status.FAILED)
+            print(f"{prefix} Status: FAILED - {str(e)}")
 
         reports.append(report.model_dump(mode="json"))
 
     return {"processed_messages": processed_count, "reports": reports}
+
+
+

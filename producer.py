@@ -97,7 +97,7 @@ def send_message(report: Report):
 def main():
     batch_no = int(datetime.now().strftime('%Y%m%d%H%M%S'))
 
-    for i in range(5):
+    for i in range(10):
         portfolio = get_random_portfolio()
 
         report = Report(
@@ -109,7 +109,7 @@ def main():
 
         # 1. Save to DB first
         create_report(report)
-        print(f"[DB] Created report {report.report_id} in batch {report.batch_no} with payload {portfolio}")
+        print(f"[DB] Created report {report}")
 
         # 2. Try sending to SQS, update DB status accordingly
         try:
