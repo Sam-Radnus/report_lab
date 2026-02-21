@@ -1,0 +1,9 @@
+FROM public.ecr.aws/lambda/python:3.12
+
+RUN pip install --no-cache-dir boto3 pydantic
+
+COPY base.py .
+COPY db.py .
+COPY dlq_handler.py .
+
+CMD ["dlq_handler.lambda_handler"]
