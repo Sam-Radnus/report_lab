@@ -1,7 +1,7 @@
 import json
 import os
 import boto3
-from datetime import datetime, timedelta
+from datetime import datetime
 from io import BytesIO
 
 
@@ -20,9 +20,8 @@ from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Spacer, Image
 from reportlab.platypus import Paragraph
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER
 
-import random
 from concurrent.futures import ThreadPoolExecutor
 import warnings
 warnings.filterwarnings('ignore')
@@ -151,7 +150,7 @@ def calculate_advanced_metrics(portfolio_values, benchmark_data):
 
 
 def create_pie_chart(portfolio_data, width=3.5, height=3.5):
-    fig, ax = plt.subplots(figsize=(width, height))
+    _, ax = plt.subplots(figsize=(width, height))
 
     labels = [h['ticker'] for h in portfolio_data]
     sizes = [h['position_value'] for h in portfolio_data]
@@ -169,7 +168,7 @@ def create_pie_chart(portfolio_data, width=3.5, height=3.5):
 
 
 def create_line_chart(portfolio_history, width=6, height=3):
-    fig, ax = plt.subplots(figsize=(width, height))
+    _, ax = plt.subplots(figsize=(width, height))
 
     dates = pd.date_range(end=datetime.now(), periods=len(portfolio_history), freq='D')
     ax.plot(dates, portfolio_history, linewidth=2, color='#4472C4')
