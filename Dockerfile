@@ -21,6 +21,8 @@ RUN fc-cache -fv
 
 COPY base.py .
 COPY db.py .
+COPY market_data.py .
+COPY report_exceptions.py .
 COPY lambda_function.py .
 
 CMD ["lambda_function.lambda_handler"]
