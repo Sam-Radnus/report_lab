@@ -8,6 +8,7 @@ class Status(Enum):
     IN_PROGRESS = 'IN_PROGRESS'
     UPLOAD_STARTED = 'UPLOAD_STARTED'
     FINISHED = 'FINISHED'
+    REJECTED = 'REJECTED'
     FAILED = 'FAILED'
 
 class Report(BaseModel):
@@ -16,3 +17,4 @@ class Report(BaseModel):
     status: Status = Status.CREATED
     s3_key: Optional[str] = None
     payload: dict
+    error_msg: Optional[str] = None
