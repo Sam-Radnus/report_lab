@@ -1,5 +1,6 @@
 import json
 import os
+from typing import Any
 import boto3
 from datetime import datetime
 from io import BytesIO
@@ -14,6 +15,8 @@ import matplotlib.pyplot as plt
 
 from base import Report, Status
 from db import update_report_status
+from market_data import get_market_data, store_ticker_data
+from report_exceptions import TickerNotFoundException
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.lib.units import inch
@@ -26,31 +29,60 @@ from concurrent.futures import ThreadPoolExecutor
 import warnings
 warnings.filterwarnings('ignore')
 
-SQS_QUEUE_URL = os.environ.get("SQS_QUEUE_URL")
+DLQ_QUEUE_URL = os.environ.get("DLQ_QUEUE_URL")
 S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-2")
 
+
 s3_client = boto3.client("s3", region_name=AWS_REGION)
+sqs_client = boto3.client("sqs")
 
 # Portfolio configuration
 
-def _fetch_single(ticker, period):
+def _fetch_single_ticker(ticker, period):
+    """Fetch a single ticker: DB first, API fallback, error if both fail."""
+    # 1. Try DB
+    try:
+        item = get_market_data(ticker)
+        if item and "records" in item:
+            df = pd.DataFrame(item["records"])
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.set_index("date")
+            for col in ["Open", "High", "Low", "Close"]:
+                df[col] = df[col].astype(float)
+            df["Volume"] = df["Volume"].astype(int)
+            if not df.empty:
+                return ticker, df, "db"
+    except Exception as e:
+        print(f"[{ticker}] DB lookup failed: {e}")
+
+    # 2. Fallback to API
     try:
         stock = yf.Ticker(ticker)
-        return ticker, stock.history(period=period)
-    except Exception:
-        print(f"Failed to fetch {ticker}")
-        return ticker, None
+        hist = stock.history(period=period)
+        if hist is not None and not hist.empty:
+            store_ticker_data(ticker, hist, period)
+            return ticker, hist, "api"
+    except Exception as e:
+        print(f"[{ticker}] API fetch failed: {e}")
+
+    # 3. Both failed
+    raise TickerNotFoundException(f"Failed to fetch data for {ticker} from both DB and API")
 
 
 def fetch_data(tickers, period='2mo'):
     data = {}
     with ThreadPoolExecutor(max_workers=len(tickers)) as pool:
-        futures = [pool.submit(_fetch_single, t, period) for t in tickers]
+        futures = {pool.submit(_fetch_single_ticker, t, period): t for t in tickers}
         for future in futures:
-            ticker, hist = future.result()
-            if hist is not None:
+            ticker = futures[future]
+            try:
+                ticker, hist, source = future.result()
                 data[ticker] = hist
+                print(f"[{ticker}] Fetched from {source}")
+            except RuntimeError as e:
+                print(str(e))
+                raise
     return data
 
 
@@ -389,7 +421,7 @@ def lambda_handler(event, context):
     total_records = len(event["Records"])
     print(f"[lambda] Received {total_records} record(s)")
 
-    for idx, record in enumerate(event["Records"]):
+    for idx, record in enumerate[Any](event["Records"]):
         body = json.loads(record["body"])
         report = Report(
             report_id=body["report_id"],
@@ -421,14 +453,26 @@ def lambda_handler(event, context):
 
             report.s3_key = s3_key
             report.status = Status.FINISHED
-            update_report_status(report.report_id, report.batch_no, Status.FINISHED, s3_key=s3_key)
+            update_report_status(report.report_id, report.batch_no, Status.FINISHED, s3_key = s3_key)
             print(f"{prefix} Status: FINISHED")
             processed_count += 1
 
+        except TickerNotFoundException as e:
+            report.status = Status.REJECTED
+            report.error_msg = str(e)
+            update_report_status(report.report_id, report.batch_no, Status.REJECTED, error_msg = report.error_msg)
+            print(f"{prefix} Status: REJECTED - {str(e)}")
+            try:
+                print(f"Sending Error message to DLQ for {report.report_id} from {report.batch_no}")
+                sqs_client.send_message(
+                    QueueUrl = DLQ_QUEUE_URL,
+                    MessageBody = json.dumps(record),
+                )
+            except Exception as e:
+                print(f"Fail to send error message to DLQ for {report.report_id} from {report.batch_no}")
         except Exception as e:
-            report.status = Status.FAILED
-            update_report_status(report.report_id, report.batch_no, Status.FAILED)
-            print(f"{prefix} Status: FAILED - {str(e)}")
+            print(f"Retrying Message for {report.report_id} from {report.batch_no}")
+            raise
 
         reports.append(report.model_dump(mode="json"))
 
