@@ -75,6 +75,7 @@ def update_report_status(report_id: int, batch_no: int, status: Status, s3_key: 
     return response["Attributes"]
 
 
+
 def delete_report(report_id: int, batch_no: int) -> bool:
     table.delete_item(Key={"report_id": report_id, "batch_no": batch_no})
     return True

@@ -15,8 +15,8 @@ import matplotlib.pyplot as plt
 
 from base import Report, Status
 from db import update_report_status
-from market_data import get_market_data, store_ticker_data
-from report_exceptions import TickerNotFoundException
+from market_data import get_market_data, store_ticker_data, mark_ticker_as_invalid
+from report_exceptions import TickerNotFoundException, InvalidTickerException
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.lib.units import inch
@@ -42,9 +42,17 @@ sqs_client = boto3.client("sqs")
 def _fetch_single_ticker(ticker, period):
     """Fetch a single ticker: DB first, API fallback, error if both fail."""
     # 1. Try DB
+    item = None
     try:
         item = get_market_data(ticker)
-        if item and "records" in item:
+    except Exception as e:
+        print(f"[{ticker}] DB lookup failed: {e}")
+
+    if item and item.get("is_valid") is False:
+        raise InvalidTickerException(f"Ticker {ticker} is marked as invalid")
+
+    if item and "records" in item:
+        try:
             df = pd.DataFrame(item["records"])
             df["date"] = pd.to_datetime(df["date"])
             df = df.set_index("date")
@@ -53,8 +61,8 @@ def _fetch_single_ticker(ticker, period):
             df["Volume"] = df["Volume"].astype(int)
             if not df.empty:
                 return ticker, df, "db"
-    except Exception as e:
-        print(f"[{ticker}] DB lookup failed: {e}")
+        except Exception as e:
+            print(f"[{ticker}] DB data parse failed: {e}")
 
     # 2. Fallback to API
     try:
@@ -65,8 +73,13 @@ def _fetch_single_ticker(ticker, period):
             return ticker, hist, "api"
     except Exception as e:
         print(f"[{ticker}] API fetch failed: {e}")
-
+    
     # 3. Both failed
+    # if both these mechanisms failed that means ticker actually does not exist in the market and therefore is actually invalid
+    # that means we can mark this ticker as invalid therefore other requests won't make redundant calls to the DB
+
+    mark_ticker_as_invalid(ticker)
+    
     raise TickerNotFoundException(f"Failed to fetch data for {ticker} from both DB and API")
 
 
@@ -457,7 +470,7 @@ def lambda_handler(event, context):
             print(f"{prefix} Status: FINISHED")
             processed_count += 1
 
-        except TickerNotFoundException as e:
+        except (TickerNotFoundException, InvalidTickerException) as e:
             report.status = Status.REJECTED
             report.error_msg = str(e)
             update_report_status(report.report_id, report.batch_no, Status.REJECTED, error_msg = report.error_msg)

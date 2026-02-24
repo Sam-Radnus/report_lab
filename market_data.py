@@ -70,6 +70,7 @@ def store_ticker_data(ticker, hist, period='2mo'):
         "records": _convert_floats(records),
         "record_count": len(records),
         "updated_at": datetime.now().isoformat(),
+        "is_valid": True,
     }
 
     market_table.put_item(Item=item)
@@ -113,6 +114,19 @@ def refresh_all(tickers=None, period='2mo', max_workers=10):
         print(f"Failed: {failed}")
 
     return {"success": success, "failed": failed}
+
+
+def mark_ticker_as_invalid(ticker):
+    """Mark a ticker as invalid in the markets table so future requests skip DB+API lookups."""
+    market_table.update_item(
+        Key={"ticker": ticker},
+        UpdateExpression="SET is_valid = :false, updated_at = :ts",
+        ExpressionAttributeValues={
+            ":false": False,
+            ":ts": datetime.now().isoformat(),
+        },
+    )
+    print(f"[DB] Marked {ticker} as invalid")
 
 
 def get_market_data(ticker):

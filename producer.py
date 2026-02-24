@@ -97,7 +97,7 @@ def send_message(report: Report):
 def main():
     batch_no = int(datetime.now().strftime('%Y%m%d%H%M%S'))
 
-    for i in range(10):
+    for i in range(100):
         portfolio = get_random_portfolio()
 
         report = Report(
@@ -117,7 +117,7 @@ def main():
             update_report_status(report.report_id, report.batch_no, Status.QUEUED)
             print(f"[SQS] Sent report {report.report_id} to queue")
         except Exception as e:
-            update_report_status(report.report_id, report.batch_no, Status.FAILED)
+            update_report_status(report.report_id, report.batch_no, Status.FAILED, error_msg = "Failed to Send Message to Queue")
             print(f"[SQS] Failed to send report {report.report_id}: {str(e)}")
 
 
