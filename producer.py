@@ -107,8 +107,11 @@ def main():
             payload = portfolio,
         )
 
-        # 1. Save to DB first
-        create_report(report)
+        # 1. Save to DB — skip if this report_id + batch_no already exists
+        _, created = create_report(report)
+        if not created:
+            print(f"[SKIP] Report {report.report_id}/{report.batch_no} already exists, skipping")
+            continue
         print(f"[DB] Created report {report}")
 
         # 2. Try sending to SQS, update DB status accordingly
