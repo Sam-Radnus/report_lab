@@ -3,6 +3,7 @@ import boto3
 from datetime import datetime
 from typing import Optional
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 from base import Report, Status
 
@@ -21,7 +22,11 @@ dynamodb = boto3.resource("dynamodb", **_boto_kwargs)
 table = dynamodb.Table(TABLE_NAME)
 
 
-def create_report(report: Report) -> dict:
+def create_report(report: Report) -> tuple[dict, bool]:
+    """
+    Creates a report only if it does not already exist.
+    Returns (item, created) — created=False means a duplicate was detected and nothing was written.
+    """
     item = {
         "report_id": report.report_id,
         "batch_no": report.batch_no,
@@ -31,8 +36,41 @@ def create_report(report: Report) -> dict:
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat(),
     }
-    table.put_item(Item=item)
-    return item
+    try:
+        table.put_item(
+            Item=item,
+            ConditionExpression="attribute_not_exists(report_id) AND attribute_not_exists(batch_no)",
+        )
+        return item, True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return item, False
+        raise
+
+
+def claim_report_for_processing(report_id: int, batch_no: int) -> bool:
+    """
+    Atomically transitions a report from QUEUED to IN_PROGRESS.
+    Returns True if the claim succeeded, False if the report was already claimed
+    (i.e. a duplicate SQS delivery arrived while or after the first was processed).
+    """
+    try:
+        table.update_item(
+            Key={"report_id": report_id, "batch_no": batch_no},
+            UpdateExpression="SET #status = :in_progress, updated_at = :ts",
+            ConditionExpression="#status = :queued",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":in_progress": Status.IN_PROGRESS.value,
+                ":queued": Status.QUEUED.value,
+                ":ts": datetime.now().isoformat(),
+            },
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
 
 
 

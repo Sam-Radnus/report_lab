@@ -14,7 +14,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from base import Report, Status
-from db import update_report_status
+from db import update_report_status, claim_report_for_processing
 from market_data import get_market_data, store_ticker_data, mark_ticker_as_invalid
 from report_exceptions import TickerNotFoundException, InvalidTickerException
 from reportlab.lib.pagesizes import letter
@@ -445,9 +445,14 @@ def lambda_handler(event, context):
 
         prefix = f"[batch={report.batch_no} report={report.report_id} ({idx+1}/{total_records})]"
 
+        # Atomically claim the report — prevents duplicate SQS deliveries from
+        # processing the same report twice (at-least-once delivery guarantee)
+        if not claim_report_for_processing(report.report_id, report.batch_no):
+            print(f"{prefix} Already claimed by another execution, skipping")
+            continue
+
         try:
             report.status = Status.IN_PROGRESS
-            update_report_status(report.report_id, report.batch_no, Status.IN_PROGRESS)
             print(f"{prefix} Status: IN_PROGRESS")
 
             pdf_content = collect_data_and_generate_report(report.payload, log_prefix=prefix)
