@@ -19,10 +19,10 @@ ENV FONTCONFIG_CACHE=/tmp/fontconfig
 
 RUN fc-cache -fv
 
-COPY base.py .
-COPY db.py .
+COPY models.py .
+COPY repository.py .
 COPY market_data.py .
-COPY report_exceptions.py .
-COPY lambda_function.py .
+COPY exceptions.py .
+COPY report_handler.py .
 
-CMD ["lambda_function.lambda_handler"]
+CMD ["report_handler.lambda_handler"]

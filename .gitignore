@@ -1,2 +1,40 @@
+# Environment
 .env
+.env.*
+!.env.example
+
+# Virtual environments
 venv/
+.venv/
+env/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checkers & linters
+.mypy_cache/
+.ruff_cache/
+
+# macOS
+.DS_Store
+
+# IDEs
+.idea/
+.vscode/
+
+# AWS SAM / CDK
+.aws-sam/
+cdk.out/

@@ -5,7 +5,7 @@ from typing import Optional
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from base import Report, Status
+from models import Report, Status
 
 try:
     from dotenv import load_dotenv

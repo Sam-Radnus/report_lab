@@ -3,8 +3,8 @@ import os
 import boto3
 from datetime import datetime
 
-from base import Report, Status
-from db import update_report_status
+from models import Report, Status
+from repository import update_report_status
 
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-2")
 

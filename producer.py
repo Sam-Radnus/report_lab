@@ -4,8 +4,8 @@ import random
 import boto3
 from datetime import datetime
 
-from base import Report, Status
-from db import create_report, update_report_status
+from models import Report, Status
+from repository import create_report, update_report_status
 from dotenv import load_dotenv
 
 load_dotenv()

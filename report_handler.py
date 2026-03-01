@@ -13,10 +13,10 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from base import Report, Status
-from db import update_report_status, claim_report_for_processing
+from models import Report, Status
+from repository import update_report_status, claim_report_for_processing
 from market_data import get_market_data, store_ticker_data, mark_ticker_as_invalid
-from report_exceptions import TickerNotFoundException, InvalidTickerException
+from exceptions import TickerNotFoundException, InvalidTickerException
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.lib.units import inch
