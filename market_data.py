@@ -1,11 +1,9 @@
 import os
-import json
 import boto3
 import yfinance as yf
 from datetime import datetime
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
 
 try:
     from dotenv import load_dotenv

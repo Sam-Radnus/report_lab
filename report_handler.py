@@ -488,7 +488,7 @@ def lambda_handler(event, context):
                 )
             except Exception as e:
                 print(f"Fail to send error message to DLQ for {report.report_id} from {report.batch_no}")
-        except Exception as e:
+        except Exception:
             print(f"Retrying Message for {report.report_id} from {report.batch_no}")
             raise
 
