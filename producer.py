@@ -6,7 +6,10 @@ from datetime import datetime
 
 from models import Report, Status
 from repository import create_report, update_report_status
+from logger import get_logger
 from dotenv import load_dotenv
+
+logger = get_logger("producer")
 
 load_dotenv()
 
@@ -109,19 +112,20 @@ def main():
 
         # 1. Save to DB — skip if this report_id + batch_no already exists
         _, created = create_report(report)
+        log = logger.bind(report_id=report.report_id, batch_no=batch_no)
         if not created:
-            print(f"[SKIP] Report {report.report_id}/{report.batch_no} already exists, skipping")
+            log.info("Report already exists, skipping", action="skip")
             continue
-        print(f"[DB] Created report {report}")
+        log.info("Created report", action="db_create")
 
         # 2. Try sending to SQS, update DB status accordingly
         try:
             send_message(report)
             update_report_status(report.report_id, report.batch_no, Status.QUEUED)
-            print(f"[SQS] Sent report {report.report_id} to queue")
+            log.info("Sent report to queue", action="sqs_send")
         except Exception as e:
             update_report_status(report.report_id, report.batch_no, Status.FAILED, error_msg = "Failed to Send Message to Queue")
-            print(f"[SQS] Failed to send report {report.report_id}: {str(e)}")
+            log.error("Failed to send report to queue", action="sqs_send", error=str(e))
 
 
 if __name__ == "__main__":

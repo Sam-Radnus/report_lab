@@ -3,13 +3,16 @@ import os
 
 from models import Status
 from repository import update_report_status
+from logger import get_logger
+
+logger = get_logger("dlq_handler")
 
 AWS_REGION = os.environ.get("AWS_REGION", "ap-south-2")
 
 
 def lambda_handler(event, context):
     total_records = len(event["Records"])
-    print(f"[dlq] Received {total_records} record(s)")
+    logger.info("Received DLQ records", total_records=total_records)
     processed_count = 0
 
     for idx, record in enumerate(event["Records"]):
@@ -26,16 +29,16 @@ def lambda_handler(event, context):
             report_id = inner["report_id"]
             batch_no = inner["batch_no"]
 
-            prefix = f"[dlq {idx+1}/{total_records} report={report_id} batch={batch_no}]"
-            print(f"{prefix} Marking as FAILED")
+            log = logger.bind(report_id=report_id, batch_no=batch_no, index=idx + 1, total=total_records)
+            log.info("Marking as FAILED")
 
             update_report_status(report_id, batch_no, Status.FAILED, error_msg="Marked Report as Failed to process and informed concerned stakeholders")
 
-            print(f"{prefix} Done")
+            log.info("Done")
             processed_count += 1
 
         except Exception as e:
-            print(f"[dlq {idx+1}/{total_records}] Error processing DLQ message: {str(e)}")
+            logger.error("Error processing DLQ message", index=idx + 1, total=total_records, error=str(e))
 
-    print(f"[dlq] Processed {processed_count}/{total_records} messages")
+    logger.info("DLQ processing complete", processed_count=processed_count, total_records=total_records)
     return {"processed_messages": processed_count}

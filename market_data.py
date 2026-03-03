@@ -4,6 +4,9 @@ import yfinance as yf
 from datetime import datetime
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
+from logger import get_logger
+
+logger = get_logger("market_data")
 
 try:
     from dotenv import load_dotenv
@@ -72,7 +75,7 @@ def store_ticker_data(ticker, hist, period='2mo'):
     }
 
     market_table.put_item(Item=item)
-    print(f"[DB] Cached {ticker} - {len(records)} records")
+    logger.info("Cached ticker data", ticker=ticker, record_count=len(records), source="db")
 
 
 def _fetch_and_store(ticker, period='2mo'):
@@ -81,15 +84,15 @@ def _fetch_and_store(ticker, period='2mo'):
         hist = stock.history(period=period)
 
         if hist.empty:
-            print(f"[SKIP] {ticker} - no data returned")
+            logger.warning("No data returned", ticker=ticker)
             return ticker, False
 
         store_ticker_data(ticker, hist, period)
-        print(f"[OK] {ticker} - {len(hist)} records stored")
+        logger.info("Ticker stored", ticker=ticker, record_count=len(hist))
         return ticker, True
 
     except Exception as e:
-        print(f"[FAIL] {ticker} - {str(e)}")
+        logger.error("Fetch and store failed", ticker=ticker, error=str(e))
         return ticker, False
 
 
@@ -107,9 +110,7 @@ def refresh_all(tickers=None, period='2mo', max_workers=10):
             else:
                 failed.append(ticker)
 
-    print(f"\nDone: {success}/{len(tickers)} tickers stored, {len(failed)} failed")
-    if failed:
-        print(f"Failed: {failed}")
+    logger.info("Refresh complete", success_count=success, fail_count=len(failed), total=len(tickers), failed_tickers=failed)
 
     return {"success": success, "failed": failed}
 
@@ -124,7 +125,7 @@ def mark_ticker_as_invalid(ticker):
             ":ts": datetime.now().isoformat(),
         },
     )
-    print(f"[DB] Marked {ticker} as invalid")
+    logger.info("Marked ticker as invalid", ticker=ticker, source="db")
 
 
 def get_market_data(ticker):

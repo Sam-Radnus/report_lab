@@ -26,8 +26,14 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 
 from concurrent.futures import ThreadPoolExecutor
+import time
 import warnings
+
+from logger import get_logger
+
 warnings.filterwarnings('ignore')
+
+logger = get_logger("report_handler")
 
 DLQ_QUEUE_URL = os.environ.get("DLQ_QUEUE_URL")
 S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")
@@ -46,7 +52,7 @@ def _fetch_single_ticker(ticker, period):
     try:
         item = get_market_data(ticker)
     except Exception as e:
-        print(f"[{ticker}] DB lookup failed: {e}")
+        logger.error("DB lookup failed", ticker=ticker, error_type="db_lookup", source="db", error=str(e))
 
     if item and item.get("is_valid") is False:
         raise InvalidTickerException(f"Ticker {ticker} is marked as invalid")
@@ -62,7 +68,7 @@ def _fetch_single_ticker(ticker, period):
             if not df.empty:
                 return ticker, df, "db"
         except Exception as e:
-            print(f"[{ticker}] DB data parse failed: {e}")
+            logger.error("DB data parse failed", ticker=ticker, error_type="db_parse", source="db", error=str(e))
 
     # 2. Fallback to API
     try:
@@ -72,7 +78,7 @@ def _fetch_single_ticker(ticker, period):
             store_ticker_data(ticker, hist, period)
             return ticker, hist, "api"
     except Exception as e:
-        print(f"[{ticker}] API fetch failed: {e}")
+        logger.error("API fetch failed", ticker=ticker, error_type="api_fetch", source="api", error=str(e))
     
     # 3. Both failed
     # if both these mechanisms failed that means ticker actually does not exist in the market and therefore is actually invalid
@@ -92,9 +98,9 @@ def fetch_data(tickers, period='2mo'):
             try:
                 ticker, hist, source = future.result()
                 data[ticker] = hist
-                print(f"[{ticker}] Fetched from {source}")
+                logger.info("Fetched ticker data", ticker=ticker, source=source)
             except RuntimeError as e:
-                print(str(e))
+                logger.error("Ticker fetch failed", ticker=ticker, error=str(e))
                 raise
     return data
 
@@ -406,23 +412,29 @@ def create_pdf_dashboard(portfolio_data, total_value, total_cost, portfolio_hist
     return buffer.getvalue()
 
 
-def collect_data_and_generate_report(portfolio, log_prefix=""):
-    print(f"{log_prefix} Fetching market data for tickers: {list(portfolio.keys())}")
+def collect_data_and_generate_report(portfolio, log=None):
+    log = log or logger
     all_tickers = list(portfolio.keys())
-    data = fetch_data(all_tickers)
 
-    print(f"{log_prefix} Calculating portfolio metrics...")
+    log.info("Fetching market data", tickers=all_tickers)
+    t0 = time.time()
+    data = fetch_data(all_tickers)
+    log.info("Market data fetched", duration_ms=round((time.time() - t0) * 1000))
+
+    log.info("Calculating portfolio metrics")
     portfolio_data, total_value, total_cost = calculate_portfolio_metrics(portfolio, data)
 
-    print(f"{log_prefix} Calculating portfolio history...")
+    log.info("Calculating portfolio history")
     portfolio_history = calculate_portfolio_history(portfolio, data, days=30)
 
-    print(f"{log_prefix} Calculating advanced metrics...")
+    log.info("Calculating advanced metrics")
     benchmark_data = data.get('SPY', None)
     metrics = calculate_advanced_metrics(portfolio_history, benchmark_data)
 
-    print(f"{log_prefix} Generating PDF... total_value=${total_value:,.2f}")
+    log.info("Generating PDF", total_value=round(total_value, 2))
+    t0 = time.time()
     pdf_content = create_pdf_dashboard(portfolio_data, total_value, total_cost, portfolio_history, metrics)
+    log.info("PDF generated", duration_ms=round((time.time() - t0) * 1000))
 
     return pdf_content
 
@@ -432,7 +444,7 @@ def lambda_handler(event, context):
     reports = []
 
     total_records = len(event["Records"])
-    print(f"[lambda] Received {total_records} record(s)")
+    logger.info("Received SQS records", total_records=total_records)
 
     for idx, record in enumerate[Any](event["Records"]):
         body = json.loads(record["body"])
@@ -443,53 +455,55 @@ def lambda_handler(event, context):
             status=Status.QUEUED,
         )
 
-        prefix = f"[batch={report.batch_no} report={report.report_id} ({idx+1}/{total_records})]"
+        log = logger.bind(batch_no=report.batch_no, report_id=report.report_id, index=idx + 1, total=total_records)
 
         # Atomically claim the report — prevents duplicate SQS deliveries from
         # processing the same report twice (at-least-once delivery guarantee)
         if not claim_report_for_processing(report.report_id, report.batch_no):
-            print(f"{prefix} Already claimed by another execution, skipping")
+            log.info("Already claimed by another execution, skipping")
             continue
 
         try:
             report.status = Status.IN_PROGRESS
-            print(f"{prefix} Status: IN_PROGRESS")
+            log.info("Status transition", status="IN_PROGRESS")
 
-            pdf_content = collect_data_and_generate_report(report.payload, log_prefix=prefix)
+            pdf_content = collect_data_and_generate_report(report.payload, log=log)
 
             report.status = Status.UPLOAD_STARTED
             update_report_status(report.report_id, report.batch_no, Status.UPLOAD_STARTED)
             s3_key = f"reports/batch-{report.batch_no}/{report.report_id}/portfolio_dashboard_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
-            print(f"{prefix} Status: UPLOAD_STARTED -> s3://{S3_BUCKET_NAME}/{s3_key}")
+            log.info("Status transition", status="UPLOAD_STARTED", s3_bucket=S3_BUCKET_NAME, s3_key=s3_key)
 
+            t0 = time.time()
             s3_client.put_object(
                 Bucket=S3_BUCKET_NAME,
                 Key=s3_key,
                 Body=pdf_content,
                 ContentType="application/pdf",
             )
+            log.info("S3 upload complete", duration_ms=round((time.time() - t0) * 1000))
 
             report.s3_key = s3_key
             report.status = Status.FINISHED
             update_report_status(report.report_id, report.batch_no, Status.FINISHED, s3_key = s3_key)
-            print(f"{prefix} Status: FINISHED")
+            log.info("Status transition", status="FINISHED")
             processed_count += 1
 
         except (TickerNotFoundException, InvalidTickerException) as e:
             report.status = Status.REJECTED
             report.error_msg = str(e)
             update_report_status(report.report_id, report.batch_no, Status.REJECTED, error_msg = report.error_msg)
-            print(f"{prefix} Status: REJECTED - {str(e)}")
+            log.warning("Status transition", status="REJECTED", error=str(e))
             try:
-                print(f"Sending Error message to DLQ for {report.report_id} from {report.batch_no}")
+                log.info("Sending to DLQ")
                 sqs_client.send_message(
                     QueueUrl = DLQ_QUEUE_URL,
                     MessageBody = json.dumps(record),
                 )
             except Exception as e:
-                print(f"Fail to send error message to DLQ for {report.report_id} from {report.batch_no}")
-        except Exception:
-            print(f"Retrying Message for {report.report_id} from {report.batch_no}")
+                log.error("Failed to send to DLQ", error=str(e))
+        except Exception as e:
+            log.error("Unhandled error, retrying", error=str(e))
             raise
 
         reports.append(report.model_dump(mode="json"))
